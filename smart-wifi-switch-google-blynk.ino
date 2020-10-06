@@ -1,17 +1,19 @@
 #include <EEPROM.h>
-#include <ESP8266WiFi.h> //https://github.com/esp8266/Arduino
+#include <ESP8266WiFi.h> //http://github.com/esp8266/Arduino
 #include <MQTTClient.h>
 //needed for library
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
-#include <WiFiManager.h> //https://github.com/tzapu/WiFiManager
-
-#include <ArduinoJson.h> //https://github.com/bblanchon/ArduinoJson
+#include <WiFiManager.h> //http://github.com/tzapu/WiFiManager
+#include <ESP8266HTTPClient.h>
+#include <ArduinoJson.h> //http://github.com/bblanchon/ArduinoJson
 #include <BlynkSimpleEsp8266.h>
 
 //for LED status
 #include <Ticker.h>
 Ticker ticker;
+
+#define UPDATE_INTERVAL 1000 // 1000 miliseconds = 1 seconds
 
 //define your default values here, if there are different values in config.json, they are overwritten.
 char blynk_token[34] = "Add your BlynkToken here";
@@ -20,19 +22,24 @@ char device_google[16] = "device id here";
 WiFiClient net;
 
 MQTTClient client;
-// MQTT info
-const char *thehostname = "postman.cloudmqtt.com"; // change to your mqtt broker - just needed if using Google Home
-const char *user = "xxxxxxx";                     // mqtt user
-const char *user_password = "yyyyyyyyyyy";        // mqtt password
-const char *id = "ESP01-Smart-Outlet-04";
+// MQTT info and Google Smart Home User Id - change the values below according to your project
+const char *thehostname = "postman.cloudmqtt.com"; // change to your mqtt broker
+const char *user = "xxxx"; // change to your mqtt user
+const char *user_password = "yyyy";// change to your mqtt password
+const char *id = "ESP01-Smart-Outlet"; //// change to your mqtt clientid
+const char *userId = "9999"; // change to your Google Smart Home user on Java backend and Firebase
 
 #define RELAY_PIN 0         // Relay output pin GPIO 0 (ESP8266-1)
-#define RESET_PIN 2         // Reset pin GPIO 2 (ESP8266-1) - keep pushed for 5 seconds to reset
 #define RESET_INTERVAL 5000 // 5000 miliseconds = 5 seconds
+uint64_t updateTimestamp = 0;
 
-int buttonState = 0; // variable for reading the pushbutton status
-int timeCounter = 0; // variable to timer 5 seconds
-uint64_t resetTimestamp = 0;
+unsigned long keyPrevMillis = 0;
+const unsigned long keySampleIntervalMs = 25;
+byte longKeyPressCountMax = 200;    // 200 * 25 = 5000 ms
+byte longKeyPressCount = 0;
+
+byte prevKeyState = HIGH;         // button is active low
+const byte keyPin = 2;            // Reset pin GPIO 2 (ESP8266-1) - keep pushed for 5 seconds to reset
 
 //flag for saving data
 bool shouldSaveConfig = false;
@@ -48,7 +55,7 @@ void setup()
 {
     // put your setup code here, to run once:
     pinMode(RELAY_PIN, OUTPUT);
-    pinMode(RESET_PIN, INPUT);
+    pinMode(keyPin, INPUT);
     pinMode(BUILTIN_LED, OUTPUT); //set led pin as output
     // start ticker with 0.5 because we start in AP mode and try to connect
     ticker.attach(0.6, tick);
@@ -83,9 +90,9 @@ void setup()
 
     //fetches ssid and pass and tries to connect
     //if it does not connect it starts an access point with the specified name
-    //here  "SmartSwitch-02"
+    //here  "SmartSwitch"
     //and goes into a blocking loop awaiting configuration
-    if (!wifiManager.autoConnect("SmartSwitch-04", "12345678"))
+    if (!wifiManager.autoConnect("SmartSwitchElectrofun", "12345678")) // default password 12345678 change if you want
     {
         Serial.println("failed to connect and hit timeout");
         delay(3000);
@@ -166,11 +173,13 @@ void messageReceived(String &topic, String &payload)
         {
             digitalWrite(RELAY_PIN, HIGH);
             Serial.println("pin high");
+            updateBlynk(1);
         }
         if (deviceOn == "false")
         {
             digitalWrite(RELAY_PIN, LOW);
             Serial.println("pin low");
+            updateBlynk(0);
         }
     }
 }
@@ -216,22 +225,29 @@ void loop()
         Blynk.run();
     }
 
-    // read the state of the pushbutton value:
-    buttonState = digitalRead(RESET_PIN);
-
-    // check if the pushbutton is pressed. If it is, the buttonState is LOW:
-    if (buttonState == HIGH)
-    {
-        resetTimestamp = now;
-    }
-    else
-    {
-        if ((now - resetTimestamp) > RESET_INTERVAL)
-        {
-            resetTimestamp = now;
-            Serial.println("Reset reached 5 seconds");
-            resetCredentials();
+    if (millis() - keyPrevMillis >= keySampleIntervalMs) {
+        keyPrevMillis = millis();
+       
+        byte currKeyState = digitalRead(keyPin);
+       
+        if ((prevKeyState == HIGH) && (currKeyState == LOW)) {
+            keyPress();
         }
+        else if ((prevKeyState == LOW) && (currKeyState == HIGH)) {
+            keyRelease();
+        }
+        else if (currKeyState == LOW) {
+            longKeyPressCount++;
+        }
+       
+        prevKeyState = currKeyState;
+    }
+
+    if ((now - updateTimestamp) > UPDATE_INTERVAL)
+    {
+       updateTimestamp = now;
+       //int relpin = digitalRead(RELAY_PIN);
+       //Blynk.virtualWrite(1, relpin); // update led status on Blynk
     }
 }
 
@@ -255,4 +271,118 @@ void configModeCallback(WiFiManager *myWiFiManager)
     Serial.println("Entered config mode");
     //entered config mode, make led toggle faster
     ticker.attach(0.2, tick);
+}
+
+// called when button is kept pressed for less than 5 seconds
+void shortKeyPress() {
+    Serial.println("short");
+    //toggle state
+    int state = digitalRead(RELAY_PIN); // get the current state of GPIO 0 pin
+    Serial.print("state = ");
+    Serial.println(state);
+    digitalWrite(RELAY_PIN, !state);    // set pin to the opposite state
+    updateBlynk(!state);
+    updateGoogle(!state);
+}
+
+// called when button is kept pressed for more than 5 seconds
+void longKeyPress() {
+    Serial.println("long");
+    resetCredentials();
+}
+
+
+// called when key goes from not pressed to pressed
+void keyPress() {
+    Serial.println("key press");
+    longKeyPressCount = 0;
+}
+
+
+// called when key goes from pressed to not pressed
+void keyRelease() {
+    Serial.println("key release");
+   
+    if (longKeyPressCount >= longKeyPressCountMax) {
+        longKeyPress();
+    }
+    else {
+        shortKeyPress();
+    }
+}
+
+BLYNK_WRITE(V0) // V0 is the number of Virtual Pin  
+{
+  int pinValue = param.asInt();
+  Serial.print("Blink V0 = ");
+  Serial.println(pinValue);
+  digitalWrite(RELAY_PIN, pinValue);    // set pin to the opposite state
+  updateGoogle(pinValue);
+}
+
+void updateBlynk(int state){
+    Serial.print("Update blynk with Value = ");
+    Serial.println(state);
+    Blynk.virtualWrite(0, state);
+}
+
+void updateGoogle(int state){
+  Serial.print("Update google with Value = ");
+  Serial.println(state);
+  sendhttp(state);
+}
+
+
+void sendhttp(int state)
+{
+
+  if (device_google != ""){
+  HTTPClient http;
+
+  http.begin("http://smart-devices-mbfa.rj.r.appspot.com/smarthome/update");
+  http.addHeader("Content-Type", "application/json");
+
+  Serial.print("[http] POST...\n");
+  // start connection and send HTTP header
+
+  StaticJsonBuffer<256> jsonBuffer;
+  JsonObject &res = jsonBuffer.createObject();
+
+  res["userId"] = userId;
+  res["deviceId"] = device_google;
+  res["errorCode"] = "";
+
+  JsonObject &states = res.createNestedObject("states");
+  states["online"] = true;
+  if (state == 1){
+      states["on"] = true;
+  }else{
+    states["on"] = false;
+  }
+  String msg;
+  res.prettyPrintTo(Serial);
+  res.printTo(msg);
+
+  int httpCode = http.POST(msg);
+
+  // httpCode will be negative on error
+  if (httpCode > 0)
+  {
+    // HTTP header has been send and Server response header has been handled
+    Serial.printf("[http] POST... code: %d\n", httpCode);
+
+    // file found at server
+    if (httpCode == HTTP_CODE_OK)
+    {
+      String payload = http.getString();
+      Serial.println(payload);
+    }
+  }
+  else
+  {
+    Serial.printf("[http] POST... failed, error: %s\n", http.errorToString(httpCode).c_str());
+  }
+
+  http.end();
+  }
 }
