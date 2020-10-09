@@ -338,7 +338,7 @@ void sendhttp(int state)
   if (device_google != ""){
   HTTPClient http;
 
-  http.begin("http://smart-devices-mbfa.rj.r.appspot.com/smarthome/update");
+  http.begin("http://<your-smart-home-end-point>/smarthome/update");
   http.addHeader("Content-Type", "application/json");
 
   Serial.print("[http] POST...\n");
