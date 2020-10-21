@@ -1,4 +1,3 @@
-
 #include <EEPROM.h>
 #include <ESP8266WiFi.h> //http://github.com/esp8266/Arduino
 #include <MQTTClient.h>
@@ -9,27 +8,27 @@
 #include <ArduinoJson.h> //http://github.com/bblanchon/ArduinoJson
 #include <BlynkSimpleEsp8266.h>
 
+// The only thing to update in this file is the google smart home endpoint on line 382 
+
 //for LED status
 #include <Ticker.h>
 Ticker ticker;
 
 #define UPDATE_INTERVAL 1000 // 1000 miliseconds = 1 seconds
 
-//message values on captive portal input fields
+//define your default values here, if there are different values in config.json, they are overwritten.
 char blynk_token[34] = "Add your BlynkToken here";
 char device_google[16] = "device id here";
 char userid[16] = "user id here";
+char mqtthost[24] = "mqtt hostname";
+char mqttport[10] = "mqtt port";
+char mqttuser[16] = "mqtt user";
+char mqttpwd[16] = "mqtt pwd";
+char mqttclient[16] = "mqtt client id";
 
 WiFiClient net;
 
 MQTTClient client;
-
-// MQTT info and Google Smart Home User Id - change the values below according to your project
-const char *thehostname = "postman.cloudmqtt.com"; // change to your mqtt broker
-const char *user = "xxxx"; // change to your mqtt user
-const char *user_password = "yyyy";// change to your mqtt password
-const char *id = "ESP01-Smart-Outlet"; //// change to your mqtt clientid
-// -------------------------------------------------------------------------------
 
 #define RELAY_PIN 0        // Relay output pin GPIO 0 (ESP8266-1)
 const byte keyPin = 2;     // Reset pin GPIO 2 (ESP8266-1) - keep pushed for 5 seconds to reset
@@ -71,18 +70,28 @@ void setup()
     WiFiManagerParameter custom_blynk_token("blynk", "blynk token", blynk_token, 34);
     WiFiManagerParameter custom_device_google("deviceid", "device id", device_google, 16);
     WiFiManagerParameter custom_userid_google("userid", "user id", userid, 16);
+    WiFiManagerParameter custom_mqtthost("mqtthost", "mqtt host", mqtthost, 24);
+    WiFiManagerParameter custom_mqttport("mqttport", "mqtt port", mqttport, 10);
+    WiFiManagerParameter custom_mqttuser("mqttuser", "mqtt user", mqttuser, 16);
+    WiFiManagerParameter custom_mqttpwd("mqttpwd", "mqtt pwd", mqttpwd, 16);
+    WiFiManagerParameter custom_mqttclient("mqttclient", "mqtt client", mqttclient, 16);
 
     //WiFiManager
     //Local intialization. Once its business is done, there is no need to keep it around
     WiFiManager wifiManager;
 
     //set config save notify callback
-    wifiManager.setSaveConfigCallback(saveConfigCallback);
+    //wifiManager.setSaveConfigCallback(saveConfigCallback);
 
     //add all your parameters here
     wifiManager.addParameter(&custom_blynk_token);
     wifiManager.addParameter(&custom_device_google);
     wifiManager.addParameter(&custom_userid_google);
+    wifiManager.addParameter(&custom_mqtthost);
+    wifiManager.addParameter(&custom_mqttport);
+    wifiManager.addParameter(&custom_mqttuser);
+    wifiManager.addParameter(&custom_mqttpwd);
+    wifiManager.addParameter(&custom_mqttclient);
 
     //reset settings - for testing
     //wifiManager.resetSettings();
@@ -92,9 +101,9 @@ void setup()
 
     //fetches ssid and pass and tries to connect
     //if it does not connect it starts an access point with the specified name
-    //here  "SmartSwitch-02"
+    //here  "SmartSwitch-03"
     //and goes into a blocking loop awaiting configuration
-    if (!wifiManager.autoConnect("SmartSwitch-05", "12345678"))
+    if (!wifiManager.autoConnect("SmartSwitch-03", "12345678"))
     {
         Serial.println("failed to connect and hit timeout");
         delay(3000);
@@ -113,6 +122,11 @@ void setup()
     strcpy(blynk_token, custom_blynk_token.getValue());
     strcpy(device_google, custom_device_google.getValue());
     strcpy(userid, custom_userid_google.getValue());
+    strcpy(mqtthost, custom_mqtthost.getValue());
+    strcpy(mqttport, custom_mqttport.getValue());
+    strcpy(mqttuser, custom_mqttuser.getValue());
+    strcpy(mqttpwd, custom_mqttpwd.getValue());
+    strcpy(mqttclient, custom_mqttclient.getValue());
 
     //save the custom parameters to EEPROM
     if (shouldSaveConfig)
@@ -125,7 +139,8 @@ void setup()
     Serial.println(WiFi.localIP());
 
     if (device_google != ""){
-        client.begin(thehostname, 16157, net);
+        int port = atoi( mqttport );
+        client.begin(mqtthost, port, net);
         client.onMessage(messageReceived);
         connect();
         delay(1000);
@@ -151,13 +166,13 @@ void connect()
         Serial.print(".");
         delay(1000);
     }
-    Serial.print("\nconnecting…");
-    while (!client.connect(id, user, user_password))
+    Serial.print("\nconnecting to mqtt broker…");
+    while (!client.connect(mqttclient, mqttuser, mqttpwd))
     {
         Serial.print(".");
         delay(1000);
     }
-    Serial.println("\nconnected!");
+    Serial.println("\nconnected to mqtt broker!");
     String devId = device_google;
     Serial.println("device id : " + devId);
     client.subscribe(devId + "-client");
@@ -167,8 +182,8 @@ void connect()
 void messageReceived(String &topic, String &payload)
 {
     Serial.println("incoming: " + topic + " - " + payload);
-    DynamicJsonBuffer jsonBuffer;
-    JsonObject &json = jsonBuffer.parseObject(payload);
+    StaticJsonDocument<200> json;
+    deserializeJson(json, payload); 
     String deviceOn = json["on"];
     String devId = device_google;
     if (topic == (devId + "-client"))
@@ -194,7 +209,25 @@ void loadEEPROMdata()
     EEPROM.get(0, blynk_token);
     EEPROM.get(100, device_google);
     EEPROM.get(150, userid);
+    EEPROM.get(170, mqtthost);
+    EEPROM.get(200, mqttport);
+    EEPROM.get(216, mqttuser);
+    EEPROM.get(240, mqttpwd);
+    EEPROM.get(260, mqttclient);
     EEPROM.end();
+
+    int len = strlen(blynk_token);
+    if (len > 34){
+      blynk_token[0] = 0;
+      device_google[0] = 0;
+      userid[0] = 0;
+      mqtthost[0] = 0;
+      mqttport[0] = 0;
+      mqttuser[0] = 0; 
+      mqttpwd[0] = 0; 
+      mqttclient[0] = 0;
+    }
+
     Serial.println("Recovered credentials from EEPROM:");
     Serial.println(blynk_token);
     Serial.println(device_google);
@@ -207,6 +240,11 @@ void saveEEPROMdata()
     EEPROM.put(0, blynk_token);
     EEPROM.put(100, device_google);
     EEPROM.put(150, userid);
+    EEPROM.put(170, mqtthost);
+    EEPROM.put(200, mqttport);
+    EEPROM.put(216, mqttuser);
+    EEPROM.put(240, mqttpwd);
+    EEPROM.put(260, mqttclient);
     EEPROM.commit();
     EEPROM.end();
     Serial.println("Save credentials from EEPROM:");
@@ -219,13 +257,15 @@ void loop()
 {
     if (WiFi.status() == WL_CONNECTED)
     {
-        if (!client.connected())
-        {
-            connect();
-        }
-        else
-        {
-            client.loop();
+        if (device_google != ""){
+          if (!client.connected())
+          {
+              connect();
+          }
+          else
+          {
+              client.loop();
+          }
         }
 
         Blynk.run();
@@ -332,26 +372,25 @@ void updateGoogle(int state){
 }
 
 
+// update Google Smart Home with status of smart switch (on or off)
 void sendhttp(int state)
 {
 
   if (device_google != ""){
   HTTPClient http;
 
-  http.begin("http://<your-smart-home-end-point>/smarthome/update");
+  http.begin("http://<your-google-project-end-point>/smarthome/update");
   http.addHeader("Content-Type", "application/json");
 
   Serial.print("[http] POST...\n");
   // start connection and send HTTP header
 
-  StaticJsonBuffer<256> jsonBuffer;
-  JsonObject &res = jsonBuffer.createObject();
-
+  StaticJsonDocument<256> res;
   res["userId"] = userid;
   res["deviceId"] = device_google;
   res["errorCode"] = "";
 
-  JsonObject &states = res.createNestedObject("states");
+  JsonObject states = res.createNestedObject("states");
   states["online"] = true;
   if (state == 1){
       states["on"] = true;
@@ -359,8 +398,9 @@ void sendhttp(int state)
     states["on"] = false;
   }
   String msg;
-  res.prettyPrintTo(Serial);
-  res.printTo(msg);
+  serializeJson(res, Serial);
+  //res.prettyPrintTo(Serial);
+  msg = serializeJsonPretty(res, Serial);
 
   int httpCode = http.POST(msg);
 
